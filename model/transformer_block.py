@@ -4,6 +4,32 @@ import torch.nn as nn
 FFN_EXPANSION = 2.66
 
 
+def _groups(dim: int) -> int:
+    for g in [32, 16, 8, 4, 2, 1]:
+        if dim % g == 0:
+            return g
+    return 1
+
+
+class ResBlock(nn.Module):
+    """Two conv layers with GroupNorm + GELU and a residual connection."""
+
+    def __init__(self, dim: int, bias: bool = False) -> None:
+        super().__init__()
+        groups = _groups(dim)
+        self.block = nn.Sequential(
+            nn.GroupNorm(groups, dim),
+            nn.Conv2d(dim, dim, 3, padding=1, bias=bias),
+            nn.GELU(),
+            nn.GroupNorm(groups, dim),
+            nn.Conv2d(dim, dim, 3, padding=1, bias=bias),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # (B, C, H, W) -> (B, C, H, W)
+        return x + self.block(x)
+
+
 class TransformerBlock(nn.Module):
     """Pre-LayerNorm transformer encoder block: MHSA + GELU FFN, both with residuals."""
 

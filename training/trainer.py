@@ -48,9 +48,9 @@ class TrainerConfig:
     num_workers: int = 8
 
     # Model
-    time_bins:  int        = 15
-    dim:        int        = 48
-    num_blocks: list[int]  = field(default_factory=lambda: [4, 6, 6, 8])
+    in_channels: int       = 15
+    dim:        int        = 24
+    num_blocks: list[int]  = field(default_factory=lambda: [2, 3, 3, 4])
 
     # Loss weights
     lambda_stp: float = 1.0
@@ -161,7 +161,7 @@ class Trainer:
     # Setup
     # ------------------------------------------------------------------
     def _build_model(self) -> nn.Module:
-        in_channels = self.config.time_bins * 2
+        in_channels = self.config.in_channels
         model = UNetTransformer(
             in_channels=in_channels,
             dim=self.config.dim,

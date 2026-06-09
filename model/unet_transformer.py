@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 
-from .transformer_block import TransformerBlock
+from .transformer_block import ResBlock, TransformerBlock
 
-DEFAULT_DIM = 48
+DEFAULT_DIM = 24
 FFN_EXPANSION = 2.66
 
 
@@ -25,7 +25,7 @@ class UNetTransformer(nn.Module):
     ) -> None:
         super().__init__()
         if num_blocks is None:
-            num_blocks = [4, 6, 6, 8]
+            num_blocks = [2, 3, 3, 4]
         if num_heads is None:
             num_heads = [1, 2, 4, 8]
 
@@ -34,9 +34,9 @@ class UNetTransformer(nn.Module):
         # (B, in_channels, H, W) -> (B, dim, H, W)
         self.patch_embed = nn.Conv2d(in_channels, dim, 3, padding=1, bias=bias)
 
-        # Encoder
+        # Encoder — level 1 uses conv ResBlocks to avoid O(N²) attention at full resolution
         self.encoder_level1 = nn.Sequential(
-            *[TransformerBlock(dim, num_heads[0], **kw) for _ in range(num_blocks[0])]
+            *[ResBlock(dim, bias=bias) for _ in range(num_blocks[0])]
         )
         # (B, dim, H, W) -> (B, dim*2, H/2, W/2)
         self.down1 = nn.Conv2d(dim, dim * 2, 4, stride=2, padding=1, bias=bias)
@@ -63,8 +63,9 @@ class UNetTransformer(nn.Module):
         # (B, dim*4, H/2, W/2) -> (B, dim, H, W)
         self.up1 = nn.ConvTranspose2d(dim * 4, dim, 2, stride=2, bias=bias)
         # input after skip concat: dim + dim = dim*2
+        # Decoder level 1 mirrors encoder: ResBlocks on the full-resolution feature map
         self.decoder_level1 = nn.Sequential(
-            *[TransformerBlock(dim * 2, num_heads[1], **kw) for _ in range(num_blocks[0])]
+            *[ResBlock(dim * 2, bias=bias) for _ in range(num_blocks[0])]
         )
 
         # (B, dim*2, H, W) -> (B, in_channels, H, W)

@@ -34,9 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Model
     model = parser.add_argument_group("model")
-    model.add_argument("--time_bins",   type=int,   default=15)
-    model.add_argument("--dim",         type=int,   default=48)
-    model.add_argument("--num_blocks",  type=int,   nargs="+", default=[4, 6, 6, 8],
+    model.add_argument("--in_channels", type=int,   default=15)
+    model.add_argument("--dim",         type=int,   default=24)
+    model.add_argument("--num_blocks",  type=int,   nargs="+", default=[2, 3, 3, 4],
                        help="Block counts per level: L1 L2 bottleneck [unused]")
     model.add_argument("--lambda_stp",  type=float, default=1.0)
     model.add_argument("--lambda_tp",   type=float, default=1.0)
