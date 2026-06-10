@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 
-from .transformer_block import ResBlock, TransformerBlock
+from .transformer_block import TransformerBlock
+from .conv_block import ConvBlock
 
 DEFAULT_DIM = 24
 FFN_EXPANSION = 2.66
@@ -36,7 +37,7 @@ class UNetTransformer(nn.Module):
 
         # Encoder — level 1 uses conv ResBlocks to avoid O(N²) attention at full resolution
         self.encoder_level1 = nn.Sequential(
-            *[ResBlock(dim, bias=bias) for _ in range(num_blocks[0])]
+            *[ConvBlock(dim, bias=bias) for _ in range(num_blocks[0])]
         )
         # (B, dim, H, W) -> (B, dim*2, H/2, W/2)
         self.down1 = nn.Conv2d(dim, dim * 2, 4, stride=2, padding=1, bias=bias)
@@ -65,7 +66,7 @@ class UNetTransformer(nn.Module):
         # input after skip concat: dim + dim = dim*2
         # Decoder level 1 mirrors encoder: ResBlocks on the full-resolution feature map
         self.decoder_level1 = nn.Sequential(
-            *[ResBlock(dim * 2, bias=bias) for _ in range(num_blocks[0])]
+            *[ConvBlock(dim * 2, bias=bias) for _ in range(num_blocks[0])]
         )
 
         # (B, dim*2, H, W) -> (B, in_channels, H, W)
