@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from .transformer_block import TransformerBlock
+from .conv_block import ConvBlock
 
 DEFAULT_DIM = 48
 FFN_EXPANSION = 2.66
@@ -36,7 +37,7 @@ class UNetTransformer(nn.Module):
 
         # Encoder
         self.encoder_level1 = nn.Sequential(
-            *[TransformerBlock(dim, num_heads[0], **kw) for _ in range(num_blocks[0])]
+            *[ConvBlock(dim, bias=bias) for _ in range(num_blocks[0])]
         )
         # (B, dim, H, W) -> (B, dim*2, H/2, W/2)
         self.down1 = nn.Conv2d(dim, dim * 2, 4, stride=2, padding=1, bias=bias)
@@ -64,7 +65,7 @@ class UNetTransformer(nn.Module):
         self.up1 = nn.ConvTranspose2d(dim * 4, dim, 2, stride=2, bias=bias)
         # input after skip concat: dim + dim = dim*2
         self.decoder_level1 = nn.Sequential(
-            *[TransformerBlock(dim * 2, num_heads[1], **kw) for _ in range(num_blocks[0])]
+            *[ConvBlock(dim * 2, bias=bias) for _ in range(num_blocks[0])]
         )
 
         # (B, dim*2, H, W) -> (B, in_channels, H, W)
