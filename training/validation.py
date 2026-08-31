@@ -7,19 +7,29 @@ from tqdm import tqdm
 from data_loader.dsec_full import DSECfull
 from utils import writer_add_features_normalized as writer_add_features
 
+from .metrics import compute_metrics
+
 
 @torch.no_grad()
 def validate(model: nn.Module, val_loader, device: torch.device) -> dict[str, float]:
     model.eval()
     loss_list = []
+    raps_list = []
+    ssim_list = []
     bar = tqdm(val_loader, total=len(val_loader), ncols=60, leave=False, desc="Validation")
     for voxel, voxel_gt, _ in bar:
         voxel    = voxel.to(device).float()
         voxel_gt = voxel_gt.to(device).float()
         output = model(voxel)
-        loss = F.l1_loss(output, voxel_gt)
-        loss_list.append(loss.item())
-    return {"Val/Loss": float(np.mean(loss_list))}
+        loss_list.append(F.l1_loss(output, voxel_gt).item())
+        m = compute_metrics(output, voxel_gt)
+        raps_list.append(m["raps"])
+        ssim_list.append(m["ssim"])
+    return {
+        "Val/Loss": float(np.mean(loss_list)),
+        "Val/raps": float(np.mean(raps_list)),
+        "Val/ssim": float(np.mean(ssim_list)),
+    }
 
 
 @torch.no_grad()

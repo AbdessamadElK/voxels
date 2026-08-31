@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .transformer_block import TransformerBlock
 from .conv_block import ConvBlock
@@ -40,13 +41,14 @@ class UNetTransformer(nn.Module):
             *[ConvBlock(dim, bias=bias) for _ in range(num_blocks[0])]
         )
         # (B, dim, H, W) -> (B, dim*2, H/2, W/2)
-        self.down1 = nn.Conv2d(dim, dim * 2, 4, stride=2, padding=1, bias=bias)
+        self.down1 = nn.Conv2d(dim, dim * 2, 3, stride=2, padding=1, bias=bias)
 
+        # Level 2 uses ConvBlocks — H/2×W/2 is still too large for global attention
         self.encoder_level2 = nn.Sequential(
-            *[TransformerBlock(dim * 2, num_heads[1], **kw) for _ in range(num_blocks[1])]
+            *[ConvBlock(dim * 2, bias=bias) for _ in range(num_blocks[1])]
         )
         # (B, dim*2, H/2, W/2) -> (B, dim*4, H/4, W/4)
-        self.down2 = nn.Conv2d(dim * 2, dim * 4, 4, stride=2, padding=1, bias=bias)
+        self.down2 = nn.Conv2d(dim * 2, dim * 4, 3, stride=2, padding=1, bias=bias)
 
         # Bottleneck
         self.latent = nn.Sequential(
@@ -55,14 +57,20 @@ class UNetTransformer(nn.Module):
 
         # Decoder
         # (B, dim*4, H/4, W/4) -> (B, dim*2, H/2, W/2)
-        self.up2 = nn.ConvTranspose2d(dim * 4, dim * 2, 2, stride=2, bias=bias)
+        self.up2 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(dim * 4, dim * 2, 3, padding=1, bias=bias),
+        )
         # input after skip concat: dim*2 + dim*2 = dim*4
         self.decoder_level2 = nn.Sequential(
-            *[TransformerBlock(dim * 4, num_heads[2], **kw) for _ in range(num_blocks[1])]
+            *[ConvBlock(dim * 4, bias=bias) for _ in range(num_blocks[1])]
         )
 
         # (B, dim*4, H/2, W/2) -> (B, dim, H, W)
-        self.up1 = nn.ConvTranspose2d(dim * 4, dim, 2, stride=2, bias=bias)
+        self.up1 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(dim * 4, dim, 3, padding=1, bias=bias),
+        )
         # input after skip concat: dim + dim = dim*2
         # Decoder level 1 mirrors encoder: ResBlocks on the full-resolution feature map
         self.decoder_level1 = nn.Sequential(
@@ -76,7 +84,7 @@ class UNetTransformer(nn.Module):
 
     def _init_conv_weights(self) -> None:
         for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+            if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
@@ -89,11 +97,13 @@ class UNetTransformer(nn.Module):
         enc2 = self.encoder_level2(self.down1(enc1))           # (B, dim*2, H/2, W/2)
         lat = self.latent(self.down2(enc2))                    # (B, dim*4, H/4, W/4)
 
+        up2 = F.interpolate(self.up2(lat), size=enc2.shape[2:], mode="bilinear", align_corners=False)
         dec2 = self.decoder_level2(
-            torch.cat([self.up2(lat), enc2], dim=1)            # (B, dim*4, H/2, W/2)
+            torch.cat([up2, enc2], dim=1)                      # (B, dim*4, H/2, W/2)
         )
+        up1 = F.interpolate(self.up1(dec2), size=enc1.shape[2:], mode="bilinear", align_corners=False)
         dec1 = self.decoder_level1(
-            torch.cat([self.up1(dec2), enc1], dim=1)           # (B, dim*2, H, W)
+            torch.cat([up1, enc1], dim=1)                      # (B, dim*2, H, W)
         )
 
         return self.output_proj(dec1)                          # (B, in_channels, H, W)

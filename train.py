@@ -41,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     model.add_argument("--lambda_stp",  type=float, default=1.0)
     model.add_argument("--lambda_tp",   type=float, default=1.0)
     model.add_argument("--lambda_ef",   type=float, default=1.0)
+    model.add_argument("--lambda_ss",   type=float, default=1.0)
+    model.add_argument("--lambda_ts",   type=float, default=1.0)
 
     # Logging
     logging = parser.add_argument_group("logging")

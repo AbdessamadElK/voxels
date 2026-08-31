@@ -13,10 +13,11 @@ import wandb
 from tqdm import tqdm
 
 from data_loader.dsec_full import make_data_loader
-from losses.v2ce_losses import CombinedLoss
+from losses.v2ce_losses_v2 import CombinedLoss
 from model.unet_transformer import UNetTransformer
 from utils import get_logger
 
+from .metrics import compute_metrics
 from .validation import validate, visualize_output
 
 
@@ -56,6 +57,8 @@ class TrainerConfig:
     lambda_stp: float = 1.0
     lambda_tp:  float = 1.0
     lambda_ef:  float = 1.0
+    lambda_ss:  float = 1.0
+    lambda_ts:  float = 1.0
 
     # Logging / cadence
     use_wandb:     bool = False
@@ -151,6 +154,8 @@ class Trainer:
             lambda_stp=config.lambda_stp,
             lambda_tp=config.lambda_tp,
             lambda_ef=config.lambda_ef,
+            lambda_ss=config.lambda_ss,
+            lambda_ts=config.lambda_ts,
         )
         self.scaler  = torch.amp.GradScaler("cuda") if self.device.type == "cuda" else None
         self.metrics = MetricTracker(config.use_wandb, config.sum_freq)
@@ -266,11 +271,16 @@ class Trainer:
 
         self.scheduler.step()
 
+        m = compute_metrics(pred.detach(), voxel_gt)
         return {
-            "loss/total": float(losses["total"]),
-            "loss/stp":   float(losses["stp"]),
-            "loss/tp":    float(losses["tp"]),
-            "loss/ef":    float(losses["ef"]),
+            "loss/total":    float(losses["total"]),
+            "loss/stp":      float(losses["stp"]),
+            "loss/tp":       float(losses["tp"]),
+            "loss/ef":       float(losses["ef"]),
+            "loss/ss":       float(losses["ss"]),
+            "loss/ts":       float(losses["ts"]),
+            "monitor/raps":  m["raps"],
+            "monitor/ssim":  m["ssim"],
         }
 
     # ------------------------------------------------------------------
