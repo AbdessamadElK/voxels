@@ -1,0 +1,13 @@
+{
+  "backbone": "swin_t7",
+  "in_channels": 15,
+  "out_channels": 15,
+  "embed_dim": 96,
+  "depths": [2, 2, 6, 2],
+  "num_heads": [3, 6, 12, 24],
+  "window_size": 7,
+  "mlp_ratio": 4.0,
+  "drop_path_rate": 0.1,
+  "attn_drop": 0.0,
+  "qkv_bias": true
+}

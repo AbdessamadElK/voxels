@@ -1,0 +1,7 @@
+{
+  "backbone": "unet_transformer",
+  "in_channels": 15,
+  "out_channels": 15,
+  "dim": 24,
+  "num_blocks": [2, 3, 3, 4]
+}

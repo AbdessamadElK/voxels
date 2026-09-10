@@ -2,11 +2,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from losses.raps_loss import RAPSLoss
 from losses.v2ce_losses import (
     OccupancyWeightedEFLoss,
     SpatialSpectralLoss,
     TemporalSpectralLoss,
 )
+
+# TemporalSpectralLoss takes log(|F| + eps). Every run up to 2026-09-08 used 1e-8,
+# and this stays the constructor default so those results remain reproducible — set
+# ts_eps from the loss config to change it. 1e-8 is far below the GT spectrum floor
+# (p10 = 0.51 on event pixels) while ~45% of bins are exactly zero, so d/dx
+# log(x + eps) = 1/eps = 1e8 lands on empty bins: the ts gradient came out 16x the
+# other four terms at init and 149x by step 2500. See NOTES.md Session 9.
+LEGACY_TS_EPS = 1e-8
 
 
 def _moments(x: torch.Tensor) -> torch.Tensor:
@@ -103,6 +112,8 @@ class CombinedLoss(nn.Module):
         lambda_ef:  float = 1.0,
         lambda_ss:  float = 1.0,
         lambda_ts:  float = 1.0,
+        lambda_raps: float = 0.0,
+        ts_eps:     float = LEGACY_TS_EPS,
     ) -> None:
         super().__init__()
         self.lambda_stp = lambda_stp
@@ -110,11 +121,14 @@ class CombinedLoss(nn.Module):
         self.lambda_ef  = lambda_ef
         self.lambda_ss  = lambda_ss
         self.lambda_ts  = lambda_ts
+        self.lambda_raps = lambda_raps
+        self.ts_eps     = ts_eps
         self.stp = STPMMLoss()
         self.tp  = TPMMLoss()
         self.ef  = OccupancyWeightedEFLoss()
         self.ss  = SpatialSpectralLoss()
-        self.ts  = TemporalSpectralLoss()
+        self.ts  = TemporalSpectralLoss(eps=ts_eps)
+        self.raps = RAPSLoss()
 
     def forward(
         self, pred: torch.Tensor, gt: torch.Tensor
@@ -125,12 +139,19 @@ class CombinedLoss(nn.Module):
         ef_val, _ = self.ef(pred, gt)
         ss_val    = self.ss(pred, gt)
         ts_val    = self.ts(pred, gt)
+        # Skip the FFT when the term is switched off (lambda_raps defaults to 0).
+        raps_val = (
+            self.raps(pred, gt)
+            if self.lambda_raps
+            else pred.new_zeros(1).squeeze()
+        )
         total = (
             self.lambda_stp * stp_val
             + self.lambda_tp  * tp_val
             + self.lambda_ef  * ef_val
             + self.lambda_ss  * ss_val
             + self.lambda_ts  * ts_val
+            + self.lambda_raps * raps_val
         )
         return {
             "total": total,
@@ -139,4 +160,5 @@ class CombinedLoss(nn.Module):
             "ef":    ef_val,
             "ss":    ss_val,
             "ts":    ts_val,
+            "raps":  raps_val,
         }

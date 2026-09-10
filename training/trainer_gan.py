@@ -12,11 +12,12 @@ from tqdm import tqdm
 
 from data_loader.dsec_full import make_data_loader
 from losses.gan_loss import GANLoss, gradient_penalty
-from losses.v2ce_losses_v2 import CombinedLoss
+from losses.loss_registry import LossRegistry
+from model.backbone_registry import BackboneRegistry
 from model.discriminator import build_discriminator
-from model.unet_transformer import UNetTransformer
 from utils import get_logger
 
+from .config_loader import LossConfig, ModelConfig, TrainingConfig
 from .metrics import compute_metrics
 from .trainer import MetricTracker, resolve_device, set_seed  # noqa: F401 (re-exported)
 from .validation import validate, visualize_output
@@ -29,6 +30,9 @@ DEFAULT_SUM_FREQ  = 100
 DEFAULT_VIS_FREQ  = 1_000
 DEFAULT_VAL_FREQ  = 5_000
 DEFAULT_SAVE_FREQ = 10_000
+
+MAX_GRAD_NORM        = 1.0
+DISCRIMINATOR_WEIGHT = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -65,28 +69,29 @@ class VoxelPool:
 
 
 # ---------------------------------------------------------------------------
-# GANTrainerConfig
+# Legacy configuration
 # ---------------------------------------------------------------------------
 
 @dataclass
 class GANTrainerConfig:
-    # Training
+    """Pre-refactor config, kept so checkpoints that pickled it still unpickle.
+
+    New runs use ModelConfig / LossConfig / TrainingConfig from config_loader.
+    """
+
     num_steps:      int   = 200_000
     checkpoint_dir: str   = "checkpoints_gan"
     validate:       bool  = False
     seed:           int   = 1
     device:         str   = "cuda"
 
-    # Data
     batch_size:  int = 6
     num_workers: int = 8
 
-    # Generator model
     in_channels: int       = 15
     dim:         int       = 24
     num_blocks:  list[int] = field(default_factory=lambda: [2, 3, 3, 4])
 
-    # Discriminator
     netD:              str   = "basic"
     ndf:               int   = 64
     n_layers_D:        int   = 3
@@ -101,7 +106,6 @@ class GANTrainerConfig:
     temporal_s:        int   = 8
     use_projection:    bool  = False
 
-    # GAN hyperparameters
     gan_mode:       str   = "lsgan"
     lambda_gan:     float = 1.0
     lambda_recon:   float = 10.0
@@ -111,7 +115,6 @@ class GANTrainerConfig:
     warmup_epochs:  int   = 0
     pool_size:      int   = 50
 
-    # Optimisers (TTUR)
     lr_g:     float = 1e-4
     lr_d:     float = 4e-4
     beta1_g:  float = 0.5
@@ -120,14 +123,12 @@ class GANTrainerConfig:
     beta2_d:  float = 0.999
     weight_decay: float = 1e-4
 
-    # Reconstruction loss weights
     lambda_stp: float = 1.0
     lambda_tp:  float = 1.0
     lambda_ef:  float = 1.0
     lambda_ss:  float = 1.0
     lambda_ts:  float = 1.0
 
-    # Logging / cadence
     use_wandb:     bool = False
     wandb_project: str  = "EV_SNN"
     sum_freq:  int = DEFAULT_SUM_FREQ
@@ -135,13 +136,8 @@ class GANTrainerConfig:
     val_freq:  int = DEFAULT_VAL_FREQ
     save_freq: int = DEFAULT_SAVE_FREQ
 
-    # Checkpoint loading
     model_path:        str  = ""
     continue_training: bool = False
-
-    @classmethod
-    def from_args(cls, args) -> "GANTrainerConfig":
-        return cls(**vars(args))
 
 
 # ---------------------------------------------------------------------------
@@ -149,34 +145,37 @@ class GANTrainerConfig:
 # ---------------------------------------------------------------------------
 
 class GANTrainer:
-    def __init__(self, config: GANTrainerConfig) -> None:
-        self.config = config
-        self.device = resolve_device(config.device)
+    def __init__(
+        self,
+        model_config:    ModelConfig,
+        loss_config:     LossConfig,
+        training_config: TrainingConfig,
+    ) -> None:
+        self.model_config    = model_config
+        self.loss_config     = loss_config
+        self.training_config = training_config
+        self.device = resolve_device(training_config.device)
 
         self.date_label = datetime.now().strftime("%Y-%m-%d")
-        self.save_dir   = Path(config.checkpoint_dir) / self.date_label
+        self.save_dir   = Path(training_config.checkpoint_dir) / self.date_label
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
         self.logger = get_logger(str(self.save_dir / "train_gan.log"))
         self.logger.info("==== NEW GAN TRAINING PROCESS ====")
-        self.logger.info(config)
+        self.logger.info(f"Model config:    {model_config.as_dict()}")
+        self.logger.info(f"Loss config:     {loss_config.as_dict()}")
+        self.logger.info(f"Training config: {training_config.as_dict()}")
 
         self.net_G        = self._build_generator()
         self.net_D        = self._build_discriminator()
         self.train_loader = self._build_train_loader()
-        self.val_loader   = self._build_val_loader() if config.validate else None
+        self.val_loader   = self._build_val_loader() if training_config.validate else None
         self.optim_G, self.optim_D = self._build_optimizers()
-        self.criterion_recon = CombinedLoss(
-            lambda_stp=config.lambda_stp,
-            lambda_tp=config.lambda_tp,
-            lambda_ef=config.lambda_ef,
-            lambda_ss=config.lambda_ss,
-            lambda_ts=config.lambda_ts,
-        )
-        self.criterion_gan = GANLoss(gan_mode=config.gan_mode)
-        self.voxel_pool    = VoxelPool(pool_size=config.pool_size)
-        self.scaler        = torch.amp.GradScaler("cuda") if self.device.type == "cuda" else None
-        self.metrics       = MetricTracker(config.use_wandb, config.sum_freq)
+        self.criterion_recon = LossRegistry.build(loss_config.as_dict(), logger=self.logger)
+        self.criterion_gan   = GANLoss(gan_mode=training_config.gan_mode)
+        self.voxel_pool      = VoxelPool(pool_size=training_config.pool_size)
+        self.scaler  = torch.amp.GradScaler("cuda") if self.device.type == "cuda" else None
+        self.metrics = MetricTracker(training_config.use_wandb, training_config.sum_freq)
 
         self.start_step = self._maybe_load_checkpoint()
 
@@ -185,46 +184,45 @@ class GANTrainer:
     # ------------------------------------------------------------------
 
     def _build_generator(self) -> nn.Module:
-        net = UNetTransformer(
-            in_channels=self.config.in_channels,
-            dim=self.config.dim,
-            num_blocks=self.config.num_blocks,
-        )
+        net = BackboneRegistry.build(self.model_config.as_dict(), device=self.device)
         self.logger.info(
-            f"Generator: UNetTransformer(in_channels={self.config.in_channels}, "
-            f"dim={self.config.dim}, num_blocks={self.config.num_blocks})"
+            f"Generator: backbone '{self.model_config.backbone}' "
+            f"({sum(p.numel() for p in net.parameters()):,} parameters)"
         )
-        return net.to(self.device)
+        return net
 
     def _build_discriminator(self) -> nn.Module:
+        config = self.training_config
         net = build_discriminator(
-            netD=self.config.netD,
-            in_channels_cond=self.config.in_channels,
-            in_channels_target=self.config.in_channels,
-            conditional=self.config.conditional,
-            ndf=self.config.ndf,
-            n_layers=self.config.n_layers_D,
-            num_D=self.config.num_D,
-            norm=self.config.norm_D,
-            use_spectral_norm=self.config.spectral_norm,
-            return_interm_feats=self.config.return_interm_feats,
-            init_type=self.config.init_type,
-            init_gain=self.config.init_gain,
-            gan_mode=self.config.gan_mode,
-            temporal_L=self.config.temporal_L,
-            temporal_s=self.config.temporal_s,
-            use_projection=self.config.use_projection,
+            netD=config.netD,
+            in_channels_cond=self.model_config.in_channels,
+            in_channels_target=self.model_config.out_channels,
+            conditional=config.conditional,
+            ndf=config.ndf,
+            n_layers=config.n_layers_D,
+            num_D=config.num_D,
+            norm=config.norm_D,
+            use_spectral_norm=config.spectral_norm,
+            return_interm_feats=config.return_interm_feats,
+            init_type=config.init_type,
+            init_gain=config.init_gain,
+            gan_mode=config.gan_mode,
+            temporal_L=config.temporal_L,
+            temporal_s=config.temporal_s,
+            use_projection=config.use_projection,
         )
         self.logger.info(
-            f"Discriminator: netD={self.config.netD}, ndf={self.config.ndf}, "
-            f"n_layers={self.config.n_layers_D}, norm={self.config.norm_D}"
+            f"Discriminator: netD={config.netD}, ndf={config.ndf}, "
+            f"n_layers={config.n_layers_D}, norm={config.norm_D}"
         )
         return net.to(self.device)
 
     def _build_train_loader(self):
-        phase  = "train" if self.config.validate else "trainval"
+        phase  = "train" if self.training_config.validate else "trainval"
         loader = make_data_loader(
-            phase, batch_size=self.config.batch_size, num_workers=self.config.num_workers
+            phase,
+            batch_size=self.training_config.batch_size,
+            num_workers=self.training_config.num_workers,
         )
         self.logger.info("Train loader created.")
         return loader
@@ -235,17 +233,18 @@ class GANTrainer:
         return loader
 
     def _build_optimizers(self) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
+        config = self.training_config
         optim_G = torch.optim.Adam(
             self.net_G.parameters(),
-            lr=self.config.lr_g,
-            betas=(self.config.beta1_g, self.config.beta2_g),
-            weight_decay=self.config.weight_decay,
+            lr=config.lr_g,
+            betas=(config.beta1_g, config.beta2_g),
+            weight_decay=config.weight_decay,
         )
         optim_D = torch.optim.Adam(
             self.net_D.parameters(),
-            lr=self.config.lr_d,
-            betas=(self.config.beta1_d, self.config.beta2_d),
-            weight_decay=self.config.weight_decay,
+            lr=config.lr_d,
+            betas=(config.beta1_d, config.beta2_d),
+            weight_decay=config.weight_decay,
         )
         return optim_G, optim_D
 
@@ -265,7 +264,7 @@ class GANTrainer:
             for voxel, voxel_gt, _ in progress:
                 losses = self._train_step(voxel, voxel_gt, epoch)
                 progress.set_description(
-                    f"Step {step}/{self.config.num_steps} | "
+                    f"Step {step}/{self.training_config.num_steps} | "
                     f"G={losses.get('G/total', 0):.3f} "
                     f"D_real={losses.get('D/real', 0):.3f}"
                 )
@@ -278,7 +277,7 @@ class GANTrainer:
                     self._run_validation(step)
                 if self._should_save(step):
                     self._save_training_checkpoint(step)
-                if step >= self.config.num_steps:
+                if step >= self.training_config.num_steps:
                     keep_training = False
                     break
 
@@ -311,7 +310,7 @@ class GANTrainer:
         # ----------------------------------------------------------
         # Discriminator update  (n_critic times)
         # ----------------------------------------------------------
-        for _ in range(self.config.n_critic):
+        for _ in range(self.training_config.n_critic):
             pooled_fake = self.voxel_pool.query(fake.detach())
             d_losses = self._update_discriminator(voxel, voxel_gt, pooled_fake)
         out.update(d_losses)
@@ -327,7 +326,7 @@ class GANTrainer:
     def _discriminator_input(
         self, cond: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
-        if self.config.conditional:
+        if self.training_config.conditional:
             return torch.cat([cond, target], dim=1)   # (B, 2C, H, W)
         return target
 
@@ -347,22 +346,22 @@ class GANTrainer:
 
         loss_real = self.criterion_gan(d_real, target_is_real=True,  for_discriminator=True)
         loss_fake = self.criterion_gan(d_fake, target_is_real=False, for_discriminator=True)
-        loss_D    = 0.5 * (loss_real + loss_fake)
+        loss_D    = DISCRIMINATOR_WEIGHT * (loss_real + loss_fake)
 
         gp_val = real.new_zeros(1).squeeze()
-        if self.config.gan_mode == "wgangp":
+        if self.training_config.gan_mode == "wgangp":
             gp_val = gradient_penalty(
                 netD=self.net_D,
                 real_target=real,
                 fake_target=fake_pool,
-                cond=cond if self.config.conditional else None,
-                lambda_gp=self.config.lambda_gp,
-                conditional=self.config.conditional,
+                cond=cond if self.training_config.conditional else None,
+                lambda_gp=self.training_config.lambda_gp,
+                conditional=self.training_config.conditional,
             )
             loss_D = loss_D + gp_val
 
         loss_D.backward()
-        torch.nn.utils.clip_grad_norm_(self.net_D.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.net_D.parameters(), max_norm=MAX_GRAD_NORM)
         self.optim_D.step()
 
         # scalar monitor values from D outputs
@@ -390,7 +389,8 @@ class GANTrainer:
     ) -> dict[str, float]:
         self.optim_G.zero_grad(set_to_none=True)
 
-        in_warmup = epoch < self.config.warmup_epochs
+        config = self.training_config
+        in_warmup = epoch < config.warmup_epochs
 
         # Reconstruction loss (spectral terms stay in float32 inside the modules)
         if self.scaler is not None:
@@ -399,7 +399,7 @@ class GANTrainer:
         else:
             recon_losses = self.criterion_recon(fake, real)
 
-        loss_G = self.config.lambda_recon * recon_losses["total"]
+        loss_G = config.lambda_recon * recon_losses["total"]
 
         g_adv_val = fake.new_zeros(1).squeeze()
         feat_val  = fake.new_zeros(1).squeeze()
@@ -408,10 +408,10 @@ class GANTrainer:
             fake_inp = self._discriminator_input(cond, fake)
             d_fake_for_G = self.net_D(fake_inp)
             g_adv_val = self.criterion_gan(d_fake_for_G, target_is_real=True, for_discriminator=False)
-            loss_G = loss_G + self.config.lambda_gan * g_adv_val
+            loss_G = loss_G + config.lambda_gan * g_adv_val
 
             # Feature matching (only when return_interm_feats and lambda_feat > 0)
-            if self.config.return_interm_feats and self.config.lambda_feat > 0.0:
+            if config.return_interm_feats and config.lambda_feat > 0.0:
                 real_inp = self._discriminator_input(cond, real)
                 with torch.no_grad():
                     d_real_feats = self.net_D(real_inp)
@@ -431,11 +431,22 @@ class GANTrainer:
                 fake_feats = _extract_feats(d_fake_for_G)
                 for rf, ff in zip(real_feats, fake_feats):
                     feat_val = feat_val + torch.nn.functional.l1_loss(ff, rf.detach())
-                loss_G = loss_G + self.config.lambda_feat * feat_val
+                loss_G = loss_G + config.lambda_feat * feat_val
 
-        loss_G.backward()
-        torch.nn.utils.clip_grad_norm_(self.net_G.parameters(), max_norm=1.0)
-        self.optim_G.step()
+        # The generator graph runs in fp16 under autocast, so scale before backward:
+        # unscaled, a single overflowing gradient makes clip_grad_norm_'s total norm
+        # infinite, clip_coef zero, and inf * 0 = NaN across every parameter.
+        # The discriminator update needs no scaler — its forward stays in fp32.
+        if self.scaler is not None:
+            self.scaler.scale(loss_G).backward()
+            self.scaler.unscale_(self.optim_G)
+            torch.nn.utils.clip_grad_norm_(self.net_G.parameters(), max_norm=MAX_GRAD_NORM)
+            self.scaler.step(self.optim_G)
+            self.scaler.update()
+        else:
+            loss_G.backward()
+            torch.nn.utils.clip_grad_norm_(self.net_G.parameters(), max_norm=MAX_GRAD_NORM)
+            self.optim_G.step()
 
         m = compute_metrics(fake.detach(), real)
         return {
@@ -457,18 +468,22 @@ class GANTrainer:
     # ------------------------------------------------------------------
 
     def _should_visualize(self, step: int) -> bool:
-        return self.config.use_wandb and step > 0 and step % self.config.vis_freq == 0
+        return (
+            self.training_config.use_wandb
+            and step > 0
+            and step % self.training_config.vis_freq == 0
+        )
 
     def _should_validate(self, step: int) -> bool:
         return (
-            self.config.validate
+            self.training_config.validate
             and self.val_loader is not None
             and step > 0
-            and step % self.config.val_freq == 0
+            and step % self.training_config.val_freq == 0
         )
 
     def _should_save(self, step: int) -> bool:
-        return step > 0 and step % self.config.save_freq == 0
+        return step > 0 and step % self.training_config.save_freq == 0
 
     @torch.no_grad()
     def _log_visualizations(self, step: int) -> None:
@@ -481,7 +496,7 @@ class GANTrainer:
     def _run_validation(self, step: int) -> None:
         self.net_G.eval()
         val_metrics = validate(self.net_G, self.val_loader, self.device)
-        if self.config.use_wandb:
+        if self.training_config.use_wandb:
             wandb.log({f"val/{k}": v for k, v in val_metrics.items()}, step=step)
         self.net_G.train()
 
@@ -497,7 +512,11 @@ class GANTrainer:
             "optimizer_G_state_dict":  self.optim_G.state_dict(),
             "optimizer_D_state_dict":  self.optim_D.state_dict(),
             "metrics":                 self.metrics.state_dict(),
-            "config":                  self.config,
+            "config": {
+                "model":    self.model_config.as_dict(),
+                "loss":     self.loss_config.as_dict(),
+                "training": self.training_config.as_dict(),
+            },
         }
 
     def _save_training_checkpoint(self, step: int) -> str:
@@ -508,28 +527,29 @@ class GANTrainer:
 
     def _save_final_model(self) -> str:
         path = self.save_dir / "checkpoint.pth"
-        torch.save(self._checkpoint_state(self.config.num_steps), path)
+        torch.save(self._checkpoint_state(self.training_config.num_steps), path)
         self.logger.info(f"Saved final checkpoint -> '{path}'.")
         return str(path)
 
     def _maybe_load_checkpoint(self) -> int:
-        if not self.config.model_path:
-            if self.config.continue_training:
+        if not self.training_config.model_path:
+            if self.training_config.continue_training:
                 self.logger.warning(
                     "continue_training=True but no model_path provided. Starting from scratch."
                 )
             return 0
 
-        path = Path(self.config.model_path)
+        path = Path(self.training_config.model_path)
         if not path.is_file():
             self.logger.warning(f"No checkpoint at '{path}'. Starting from scratch.")
             return 0
 
+        # weights_only=False: pre-refactor checkpoints pickled a GANTrainerConfig instance.
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         self._load_model_weights(checkpoint)
 
         start_step = 0
-        if self.config.continue_training:
+        if self.training_config.continue_training:
             start_step = self._load_training_state(checkpoint)
 
         self.logger.info(f"Loaded checkpoint from '{path}'.")

@@ -1,0 +1,13 @@
+{
+  "loss_fn": "CombinedLoss",
+  "lambda_stp": 1.0,
+  "lambda_tp": 1.0,
+  "lambda_ef": 1.0,
+  "lambda_ss": 1.0,
+  "lambda_ts": 0.01,
+  "ts_eps": 1e-8,
+  "tp_kwargs": {
+    "spatial_reduce": "mean",
+    "normalize_profiles": false
+  }
+}

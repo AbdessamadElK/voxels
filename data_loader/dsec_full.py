@@ -21,24 +21,39 @@ DATA_SPLIT = {
                'zurich_city_01_d',
                'zurich_city_01_e',
                'zurich_city_01_f',
-               'zurich_city_02_a',
                'zurich_city_02_b',
-               'zurich_city_02_c'],
-    
-    'val'   : ['interlaken_00_d',
-               'thun_00_a'],
+               'zurich_city_02_c',
+               'zurich_city_02_d',
+               'zurich_city_02_e',
+               'zurich_city_04_a',
+               'zurich_city_04_c',
+               'zurich_city_04_d',
+               'zurich_city_04_f',
+               'zurich_city_05_a',
+               'zurich_city_05_b',
+               'zurich_city_07_a',
+               'zurich_city_08_a',
+               'zurich_city_09_a',
+               'zurich_city_09_c',
+               'zurich_city_09_d',
+               'zurich_city_09_e',
+               'zurich_city_10_a',
+               'zurich_city_10_b',
+               'zurich_city_11_a',
+               'zurich_city_11_b',
+               'zurich_city_11_c'],
 
-    # 'val'   : ['interlaken_00_c',
-    #            'interlaken_00_d',
-    #            'interlaken_00_e',
-    #            'interlaken_00_f',
-    #            'interlaken_00_g',
-    #            'thun_00_a']
+    'val'   : ['interlaken_00_c',
+               'interlaken_00_d',
+               'interlaken_00_e',
+               'interlaken_00_f',
+               'interlaken_00_g',
+               'zurich_city_06_a',
+               'zurich_city_03_a']
 }
 
-DATA_SAMPLES = [('zurich_city_01_a', 2),
-                ('interlaken_00_d', 0),
-                ('thun_00_a', 24)]
+DATA_SAMPLES = [('zurich_city_01_a', 0),
+                ('interlaken_00_d', 0)]
 
 def get_seq_idx_from_path(path: Path) -> str | None:
     keywords = {"zurich", "thun", "interlaken"}

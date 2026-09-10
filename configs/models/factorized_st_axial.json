@@ -1,0 +1,10 @@
+{
+  "backbone": "factorized_st",
+  "in_channels": 15,
+  "out_channels": 15,
+  "dim": 16,
+  "num_blocks": [1, 2, 2],
+  "num_heads": [1, 2, 4],
+  "attn_type": "axial",
+  "decoder_attn": false
+}
